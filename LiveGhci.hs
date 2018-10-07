@@ -24,9 +24,11 @@ type FileModificationTimes = Map.Map FilePath UTCTime
     --
 
 
+timeoutMilliseconds :: Int
 timeoutMilliseconds = 300
 
--- 5*5 ==> Computation did not finish within 300 milliseconds. Infinite loop?
+
+-- 5*20 ==> 100
 
 
 (|>) = flip ($)
@@ -36,7 +38,7 @@ takeLast :: Int -> [a] -> [a]
 takeLast n list = drop (length list - n) list
 
 
--- Returns (lines, newLineStr)==> Computation did not finish within 300 milliseconds. Infinite loop?
+-- Returns (lines, newLineStr)
 splitIntoLines :: String -> ([String], String)
 splitIntoLines str =
     (lines, newLineStr)
@@ -68,27 +70,23 @@ startGhci filePath = do
 
 
 readDataAvailable :: Handle -> IO String
-readDataAvailable handle = readDataAvailableReversed handle >>= (return . reverse)
-
-
-clearBuffer :: Handle -> IO ()
-clearBuffer handle = readDataAvailableReversed handle >> return ()
-
-
-readDataAvailableReversed :: Handle -> IO String
-readDataAvailableReversed handle = do
+readDataAvailable handle = do
     isAnyInputAvailable <- hReady handle
     if isAnyInputAvailable then do
         char <- hGetChar handle
-        rest <- readDataAvailableReversed handle
+        rest <- readDataAvailable handle
         return (char:rest)
     else
         return ""
 
 
+clearBuffer :: Handle -> IO ()
+clearBuffer handle = readDataAvailable handle >> return ()
+
+
 readDataUntilPause :: Handle -> IO String
 readDataUntilPause handle = do
-    isAnyInputAvailable <- hWaitForInput handle 50
+    isAnyInputAvailable <- hWaitForInput handle 20
     if isAnyInputAvailable then do
         someData <- readDataAvailable handle
         moreData <- readDataUntilPause handle
@@ -98,7 +96,18 @@ readDataUntilPause handle = do
 
 
 isGhciPrompt :: String -> Bool
-isGhciPrompt str = takeLast 2 str == "> " && map isUpper (take 1 str) == [True]
+isGhciPrompt str = takeLast 2 str == "> " && map (\c -> isUpper c || c == '*') (take 1 str) == [True]
+
+
+readDataUntilPrompt :: String -> Handle -> IO String
+readDataUntilPrompt dataSoFar handle = do
+    someData <- readDataUntilPause handle
+    let dataRead = dataSoFar ++ someData
+    let (lines, _) = splitIntoLines dataRead
+    if map isGhciPrompt (takeLast 1 lines) == [True] then
+        return dataRead
+    else
+        readDataUntilPrompt dataSoFar handle
 
 
 squishAndChopOffPrompt :: String -> String
@@ -110,17 +119,17 @@ squishAndChopOffPrompt str =
     |> unwords
 
 
-ghciRunLine :: GHCIHandles -> String -> IO String
-ghciRunLine (ghciIn, ghciOut, ghciErr, hGhci) line = do
+ghciRunLine :: Int -> GHCIHandles -> String -> IO String
+ghciRunLine timeoutMilliseconds (ghciIn, ghciOut, ghciErr, hGhci) line = do
     clearBuffer ghciOut
     clearBuffer ghciErr
     -- maybeResult <- return Nothing
-    maybeResult <- System.Timeout.timeout (timeoutMilliseconds * 100) $ do
+    maybeResult <- System.Timeout.timeout (timeoutMilliseconds * 1000) $ do
         hPutStrLn ghciIn line
         hFlush ghciIn
-        putStrLn line
+        putStrLn $ "Querying GHCi: " ++ line
         _ <- hWaitForInput ghciOut timeoutMilliseconds
-        stdOut <- readDataUntilPause ghciOut
+        stdOut <- readDataUntilPrompt "" ghciOut
         stdErr <- readDataUntilPause ghciErr
         putStrLn stdErr
         putStrLn stdOut
@@ -129,16 +138,17 @@ ghciRunLine (ghciIn, ghciOut, ghciErr, hGhci) line = do
         Just result -> return result
         Nothing -> do
             -- Tell GHCi to abort the computation
+            putStrLn "Timeout!"
             Process.terminateProcess hGhci
-            threadDelay (10 * 100) -- 10ms
+            threadDelay (10 * 1000) -- 10ms
             return $ "Computation did not finish within " ++ show timeoutMilliseconds ++ " milliseconds. Infinite loop?"
 
 
--- Returns whatever :reload says==> Computation did not finish within 300 milliseconds. Infinite loop?
+-- Returns whatever :reload says
 startOrReloadGhciFor :: FilePath -> StateT GHCIHandlesMap IO String
 startOrReloadGhciFor filePath = do
     ghciHandles <- ensureGhciRunningFor filePath
-    lift $ ghciRunLine ghciHandles ":reload"
+    lift $ ghciRunLine (5000 + timeoutMilliseconds) ghciHandles ":reload"
 
 
 ensureGhciRunningFor :: FilePath -> StateT GHCIHandlesMap IO GHCIHandles
@@ -168,13 +178,13 @@ perhapsRefreshGhciExpression filePath maybeUniversalMessage line =
     case line of
         '-':'-':restOfLine ->
             case splitOn "==>" restOfLine of
-                lhs:_ ->
+                lhs:_:_ ->
                     case maybeUniversalMessage of
                         Just universalMessage -> return $ concat ["--", lhs, "==> ", universalMessage]
                         Nothing -> do
                             -- Restart GHCi if...it crashed??? interruptProcessGroupOf above should not quite GHCi completely...
                             ghciHandles <- ensureGhciRunningFor filePath
-                            ghciResult <- lift $ ghciRunLine ghciHandles lhs
+                            ghciResult <- lift $ ghciRunLine timeoutMilliseconds ghciHandles lhs
                             return $ concat ["--", lhs, "==> ", ghciResult]
 
                 _ ->
@@ -184,21 +194,21 @@ perhapsRefreshGhciExpression filePath maybeUniversalMessage line =
             return line
 
 
--- Look for each ==> Computation did not finish within 300 milliseconds. Infinite loop?
+{- Look for each ==> and evaluate its lhs and place that as its lhs -}
 refreshGhciExpressions :: FilePath -> StateT GHCIHandlesMap IO ()
 refreshGhciExpressions filePath = do
     lift $ putStrLn ("Refreshing GHCi expressions in " ++ filePath)
     source <- lift $ readFile filePath
     -- lift $ putStrLn source -- In case of some kind of uber-failure that destroys a file.
     reloadMessage <- startOrReloadGhciFor filePath
-    let maybeUniversalMessage = if "Failed, " `isInfixOf` reloadMessage then Just "Compile failed." else Nothing
+    let maybeUniversalMessage = if "Failed, " `isInfixOf` reloadMessage || "Infinite loop?" `isInfixOf` reloadMessage then Just "Compile failed." else Nothing
     let (lines, newLineStr) = splitIntoLines source
     refreshedLines <- mapM (perhapsRefreshGhciExpression filePath maybeUniversalMessage) lines
     lift $ writeFile filePath (intercalate newLineStr refreshedLines)
 
 
--- Loops forever!==> Computation did not finish within 300 milliseconds. Infinite loop?
--- Cache ghciHandles to avoid GHCi startup time==> Computation did not finish within 300 milliseconds. Infinite loop?
+-- Loops forever!
+-- Cache ghciHandles to avoid GHCi startup time
 handleHaskellFileChangeEvents :: FileModificationTimes -> GHCIHandlesMap -> Chan FSNotify.Event -> IO ()
 handleHaskellFileChangeEvents fileModificationTimes ghciHandlesMap channel = do
     fsNotifyEvent <- readChan channel
