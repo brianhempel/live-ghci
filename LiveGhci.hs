@@ -3,6 +3,7 @@
 module Main where
 
 import qualified System.FSNotify as FSNotify
+import qualified System.Directory
 import System.IO (Handle, hFlush, hWaitForInput, hReady, hGetChar, hSetBuffering, hPutStrLn, BufferMode(..))
 import System.Process as Process
 import qualified System.Timeout
@@ -11,6 +12,7 @@ import Control.Concurrent.Chan
 import Control.Monad.State
 import qualified Data.Map as Map
 import Data.Char (isUpper)
+import Data.Time.Clock (UTCTime)
 import Data.List (isSuffixOf, isInfixOf, intercalate, drop, take)
 import Data.List.Split (splitOn)
 import Control.Category ((>>>)) -- Reversed composition
@@ -18,9 +20,13 @@ import Control.Category ((>>>)) -- Reversed composition
 
 type GHCIHandles    = (Handle, Handle, Handle, Process.ProcessHandle)
 type GHCIHandlesMap = Map.Map String GHCIHandles
+type FileModificationTimes = Map.Map FilePath UTCTime
+    --
 
 
 timeoutMilliseconds = 300
+
+-- 5*5 ==> Computation did not finish within 300 milliseconds. Infinite loop?
 
 
 (|>) = flip ($)
@@ -30,7 +36,7 @@ takeLast :: Int -> [a] -> [a]
 takeLast n list = drop (length list - n) list
 
 
--- Returns (lines, newLineStr)
+-- Returns (lines, newLineStr)==> Computation did not finish within 300 milliseconds. Infinite loop?
 splitIntoLines :: String -> ([String], String)
 splitIntoLines str =
     (lines, newLineStr)
@@ -108,6 +114,7 @@ ghciRunLine :: GHCIHandles -> String -> IO String
 ghciRunLine (ghciIn, ghciOut, ghciErr, hGhci) line = do
     clearBuffer ghciOut
     clearBuffer ghciErr
+    -- maybeResult <- return Nothing
     maybeResult <- System.Timeout.timeout (timeoutMilliseconds * 100) $ do
         hPutStrLn ghciIn line
         hFlush ghciIn
@@ -122,15 +129,12 @@ ghciRunLine (ghciIn, ghciOut, ghciErr, hGhci) line = do
         Just result -> return result
         Nothing -> do
             -- Tell GHCi to abort the computation
-            Process.interruptProcessGroupOf hGhci
+            Process.terminateProcess hGhci
             threadDelay (10 * 100) -- 10ms
-            clearBuffer ghciOut
-            clearBuffer ghciErr
             return $ "Computation did not finish within " ++ show timeoutMilliseconds ++ " milliseconds. Infinite loop?"
 
--- 5 * 5 ==>
 
--- Returns whatever :reload says
+-- Returns whatever :reload says==> Computation did not finish within 300 milliseconds. Infinite loop?
 startOrReloadGhciFor :: FilePath -> StateT GHCIHandlesMap IO String
 startOrReloadGhciFor filePath = do
     ghciHandles <- ensureGhciRunningFor filePath
@@ -180,12 +184,12 @@ perhapsRefreshGhciExpression filePath maybeUniversalMessage line =
             return line
 
 
--- Look for each ==>, evaluate its LHS, replace its RHS
+-- Look for each ==> Computation did not finish within 300 milliseconds. Infinite loop?
 refreshGhciExpressions :: FilePath -> StateT GHCIHandlesMap IO ()
 refreshGhciExpressions filePath = do
     lift $ putStrLn ("Refreshing GHCi expressions in " ++ filePath)
     source <- lift $ readFile filePath
-    lift $ putStrLn source -- In case of some kind of uber-failure that destroys a file.
+    -- lift $ putStrLn source -- In case of some kind of uber-failure that destroys a file.
     reloadMessage <- startOrReloadGhciFor filePath
     let maybeUniversalMessage = if "Failed, " `isInfixOf` reloadMessage then Just "Compile failed." else Nothing
     let (lines, newLineStr) = splitIntoLines source
@@ -193,22 +197,39 @@ refreshGhciExpressions filePath = do
     lift $ writeFile filePath (intercalate newLineStr refreshedLines)
 
 
--- Loops forever!
--- Cache ghciHandles to avoid GHCi startup time
-handleHaskellFileChangeEvents :: GHCIHandlesMap -> Chan FSNotify.Event -> IO ()
-handleHaskellFileChangeEvents ghciHandlesMap channel = do
+-- Loops forever!==> Computation did not finish within 300 milliseconds. Infinite loop?
+-- Cache ghciHandles to avoid GHCi startup time==> Computation did not finish within 300 milliseconds. Infinite loop?
+handleHaskellFileChangeEvents :: FileModificationTimes -> GHCIHandlesMap -> Chan FSNotify.Event -> IO ()
+handleHaskellFileChangeEvents fileModificationTimes ghciHandlesMap channel = do
     fsNotifyEvent <- readChan channel
+    let continue = handleHaskellFileChangeEvents fileModificationTimes ghciHandlesMap channel -- Haskell is lazy, so don't need to thunk this...?
     case fsNotifyEvent of
         FSNotify.Modified filePath _ False -> do
-            ((), newGhciHandlesMap) <- runStateT (refreshGhciExpressions filePath) ghciHandlesMap
-            handleHaskellFileChangeEvents newGhciHandlesMap channel
+            -- putStrLn filePath
+            -- handleHaskellFileChangeEvents ghciHandlesMap channel
+            fileModificationTime <- System.Directory.getModificationTime filePath
+            let doRefresh = do -- Haskell is lazy, so don't need to thunk this...?
+                ((), newGhciHandlesMap) <- runStateT (refreshGhciExpressions filePath) ghciHandlesMap
+                newFileModificationTime <- System.Directory.getModificationTime filePath
+                let newFileModificationTimes = Map.insert filePath newFileModificationTime fileModificationTimes
+                handleHaskellFileChangeEvents newFileModificationTimes newGhciHandlesMap channel
+
+            case Map.lookup filePath fileModificationTimes of
+                Just lastFileModificationTimeSeen ->
+                    if lastFileModificationTimeSeen < fileModificationTime then
+                        doRefresh
+                    else
+                        continue
+
+                Nothing ->
+                    doRefresh
 
         _ ->
-            handleHaskellFileChangeEvents ghciHandlesMap channel
+            continue
 
 main :: IO ()
 main =
     FSNotify.withManager $ \watchManager -> do
         channel <- newChan
         _       <- FSNotify.watchTreeChan watchManager "." isHaskellFileChange channel
-        handleHaskellFileChangeEvents Map.empty channel
+        handleHaskellFileChangeEvents Map.empty Map.empty channel
