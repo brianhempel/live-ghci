@@ -1,0 +1,5 @@
+.DS_Store
+LiveGhci
+bin/
+*.hi
+*.o
