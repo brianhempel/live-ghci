@@ -18,19 +18,16 @@ import Data.List.Split (splitOn)
 import Control.Category ((>>>)) -- Reversed composition
 
 
-type GHCIHandles    = (Handle, Handle, Handle, Process.ProcessHandle)
-type GHCIHandlesMap = Map.Map String GHCIHandles
+type GHCIHandles           = (Handle, Handle, Handle, Process.ProcessHandle)
+type GHCIHandlesMap        = Map.Map String GHCIHandles
 type FileModificationTimes = Map.Map FilePath UTCTime
-    --
 
 
 timeoutMilliseconds :: Int
 timeoutMilliseconds = 300
 
 
--- 5*20 ==> 100
-
-
+(|>) :: a -> (a -> c) -> c
 (|>) = flip ($)
 
 
@@ -155,13 +152,13 @@ ensureGhciRunningFor :: FilePath -> StateT GHCIHandlesMap IO GHCIHandles
 ensureGhciRunningFor filePath = do
     ghciHandlesMap <- get
     case Map.lookup filePath ghciHandlesMap of
-        Just ghciHandles@(ghciIn, ghciOut, ghciErr, hGhci) -> do
+        Just ghciHandles@(_, _, _, hGhci) -> do
             maybeExitCode <- lift $ Process.getProcessExitCode hGhci
             case maybeExitCode of
                 Just _ -> do
-                    ghciHandles <- lift $ startGhci filePath
-                    put $ Map.insert filePath ghciHandles ghciHandlesMap
-                    return ghciHandles
+                    newGhciHandles <- lift $ startGhci filePath
+                    put $ Map.insert filePath newGhciHandles ghciHandlesMap
+                    return newGhciHandles
 
                 Nothing ->
                     return ghciHandles
@@ -170,7 +167,6 @@ ensureGhciRunningFor filePath = do
             ghciHandles <- lift $ startGhci filePath
             put $ Map.insert filePath ghciHandles ghciHandlesMap
             return ghciHandles
-
 
 
 perhapsRefreshGhciExpression :: FilePath -> Maybe String -> String -> StateT GHCIHandlesMap IO String
@@ -199,7 +195,7 @@ refreshGhciExpressions :: FilePath -> StateT GHCIHandlesMap IO ()
 refreshGhciExpressions filePath = do
     lift $ putStrLn ("Refreshing GHCi expressions in " ++ filePath)
     source <- lift $ readFile filePath
-    -- lift $ putStrLn source -- In case of some kind of uber-failure that destroys a file.
+    lift $ putStrLn source -- In case of some kind of uber-failure that destroys a file.
     reloadMessage <- startOrReloadGhciFor filePath
     let maybeUniversalMessage = if "Failed, " `isInfixOf` reloadMessage || "Infinite loop?" `isInfixOf` reloadMessage then Just "Compile failed." else Nothing
     let (lines, newLineStr) = splitIntoLines source
@@ -237,9 +233,11 @@ handleHaskellFileChangeEvents fileModificationTimes ghciHandlesMap channel = do
         _ ->
             continue
 
+
 main :: IO ()
 main =
     FSNotify.withManager $ \watchManager -> do
         channel <- newChan
         _       <- FSNotify.watchTreeChan watchManager "." isHaskellFileChange channel
         handleHaskellFileChangeEvents Map.empty Map.empty channel
+
