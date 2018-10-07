@@ -16,7 +16,17 @@ If re-evaluation of all special comments is getting too slow, you can change a `
 
 ## Setup
 
-Start Live GHCi as follows:
+Clone and make it:
+
+```
+$ git clone https://github.com/brianhempel/live-ghci.git
+$ cd live-ghci
+$ make
+```
+
+You may have to install some packages with `cabal install package_name`. A binary will be produced in `./bin/live-ghci`. Copy or symlink it into your PATH.
+
+Then in your Haskell project directory, start Live GHCi as follows:
 
 ```
 $ live-ghci
