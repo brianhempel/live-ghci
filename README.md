@@ -24,7 +24,9 @@ $ cd live-ghci
 $ make
 ```
 
-You may have to install some packages with `cabal install package_name`. A binary will be produced in `./bin/live-ghci`. Copy or symlink it into your PATH.
+You may have to install some packages with `cabal install package_name`. You will need `fsnotify 0.3.0.0` or higher. Installing this package with older versions of `fsnotify` may result in type errors.
+
+A binary will be produced in `./bin/live-ghci`. Copy or symlink it into your PATH.
 
 Then in your Haskell project directory, start Live GHCi as follows:
 
