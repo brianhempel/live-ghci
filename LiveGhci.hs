@@ -59,10 +59,14 @@ isHaskellFileChange _                                    = False
 startGhci :: FilePath -> IO GHCIHandles
 startGhci filePath = do
     let ghciCommand = "ghci " ++ filePath
-    putStrLn $ "Starting GHCi: " ++ ghciCommand
+    putStrLn $ "\nStarting GHCi: " ++ ghciCommand
     (Just ghciIn, Just ghciOut, Just ghciErr, hGhci) <- Process.createProcess (Process.shell ghciCommand){ std_in = Process.CreatePipe, std_out = Process.CreatePipe, std_err = Process.CreatePipe }
     hSetBuffering ghciOut NoBuffering
     hSetBuffering ghciErr NoBuffering
+    initialGhciOut <- readDataUntilPrompt ghciOut
+    initialGhciErr <- readDataUntilPause ghciErr
+    putStrLn initialGhciErr
+    putStrLn initialGhciOut
     return (ghciIn, ghciOut, ghciErr, hGhci)
 
 
@@ -96,15 +100,19 @@ isGhciPrompt :: String -> Bool
 isGhciPrompt str = takeLast 2 str == "> " && map (\c -> isUpper c || c == '*') (take 1 str) == [True]
 
 
-readDataUntilPrompt :: String -> Handle -> IO String
-readDataUntilPrompt dataSoFar handle = do
+readDataUntilPrompt :: Handle -> IO String
+readDataUntilPrompt = readDataUntilPrompt_ ""
+
+
+readDataUntilPrompt_ :: String -> Handle -> IO String
+readDataUntilPrompt_ dataSoFar handle = do
     someData <- readDataUntilPause handle
     let dataRead = dataSoFar ++ someData
     let (lines, _) = splitIntoLines dataRead
     if map isGhciPrompt (takeLast 1 lines) == [True] then
         return dataRead
     else
-        readDataUntilPrompt dataSoFar handle
+        readDataUntilPrompt_ dataSoFar handle
 
 
 squishAndChopOffPrompt :: String -> String
@@ -124,9 +132,9 @@ ghciRunLine timeoutMilliseconds (ghciIn, ghciOut, ghciErr, hGhci) line = do
     maybeResult <- System.Timeout.timeout (timeoutMilliseconds * 1000) $ do
         hPutStrLn ghciIn line
         hFlush ghciIn
-        putStrLn $ "Querying GHCi: " ++ line
+        putStrLn $ "\nQuerying GHCi: " ++ line
         _ <- hWaitForInput ghciOut timeoutMilliseconds
-        stdOut <- readDataUntilPrompt "" ghciOut
+        stdOut <- readDataUntilPrompt ghciOut
         stdErr <- readDataUntilPause ghciErr
         putStrLn stdErr
         putStrLn stdOut
