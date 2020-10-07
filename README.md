@@ -21,10 +21,10 @@ Clone and make it:
 ```
 $ git clone https://github.com/brianhempel/live-ghci.git
 $ cd live-ghci
-$ make
+$ make install
 ```
 
-You may have to install some packages with `cabal install package_name`. A binary will be produced in `./bin/live-ghci`. Copy or symlink it into your PATH.
+A binary will be produced and copied to `/usr/local/bin/live-ghci`.
 
 Then in your Haskell project directory, start Live GHCi as follows:
 
