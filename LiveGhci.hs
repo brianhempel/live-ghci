@@ -179,16 +179,28 @@ ensureGhciRunningFor filePath = do
 
 perhapsRefreshGhciExpression :: FilePath -> Maybe String -> String -> StateT GHCIHandlesMap IO String
 perhapsRefreshGhciExpression filePath maybeUniversalMessage line =
+    let ensureGhciRunningAndRunLine line = do
+        -- Restart GHCi if...it crashed??? interruptProcessGroupOf above should not quit GHCi completely...
+        ghciHandles <- ensureGhciRunningFor filePath
+        lift $ ghciRunLine timeoutMilliseconds ghciHandles line
+    in
     case line of
+        '{':'-':'#':' ':'L':'A':'N':'G':'U':'A':'G':'E':' ':restOfLine -> do
+            case words restOfLine of
+                languageExtentionStr:_ -> do
+                    _ <- ensureGhciRunningAndRunLine (":set -X" ++ languageExtentionStr)
+                    return line
+                _ ->
+                    return line
         '-':'-':restOfLine ->
             case splitOn "==>" restOfLine of
                 lhs:_:_ ->
                     case maybeUniversalMessage of
                         Just universalMessage -> return $ concat ["--", lhs, "==> ", universalMessage]
                         Nothing -> do
-                            -- Restart GHCi if...it crashed??? interruptProcessGroupOf above should not quite GHCi completely...
-                            ghciHandles <- ensureGhciRunningFor filePath
-                            ghciResult <- lift $ ghciRunLine timeoutMilliseconds ghciHandles lhs
+                            -- ghciHandles <- ensureGhciRunningFor filePath
+                            -- ghciResult <- lift $ ghciRunLine timeoutMilliseconds ghciHandles lhs
+                            ghciResult <- ensureGhciRunningAndRunLine lhs
                             return $ concat ["--", lhs, "==> ", ghciResult]
 
                 _ ->
